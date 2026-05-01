@@ -39,7 +39,14 @@ llmctl -i                                          # REPL with slash commands
 
 ## Install
 
-Build from source (until release tarballs are published):
+```bash
+brew install agent-rt/tap/llmctl  # macOS arm64 (Apple Silicon) only
+```
+
+Or download the tarball from the
+[Releases page](https://github.com/agent-rt/llmctl/releases).
+
+Build from source:
 
 ```bash
 git clone https://github.com/agent-rt/llmctl
