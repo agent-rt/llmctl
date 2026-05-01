@@ -11,6 +11,7 @@ pub const defaults = @import("defaults.zig");
 pub const session = @import("session.zig");
 pub const repl = @import("repl.zig");
 pub const config_cmd = @import("config_cmd.zig");
+pub const error_body = @import("error_body.zig");
 
 test {
     _ = sse;
@@ -23,4 +24,5 @@ test {
     _ = defaults;
     _ = session;
     _ = config_cmd;
+    _ = error_body;
 }

@@ -13,6 +13,7 @@ const http = llmctl.http;
 const redact = llmctl.redact;
 const defaults_mod = llmctl.defaults;
 const config_cmd = llmctl.config_cmd;
+const error_body = llmctl.error_body;
 
 const Compat = enum { openai, anthropic };
 
@@ -580,7 +581,8 @@ fn runOne(
     const latency_ms: i64 = @intCast(@divTrunc(latency_ns, std.time.ns_per_ms));
 
     if (result.status >= 400) {
-        const safe_msg = try redact.redact(arena_alloc, result.error_body);
+        const extracted = try error_body.extractMessage(arena_alloc, result.error_body);
+        const safe_msg = try redact.redact(arena_alloc, extracted);
         const code: types.ErrorCode = switch (result.status) {
             401, 403 => .provider_auth_failed,
             429 => .provider_rate_limited,
