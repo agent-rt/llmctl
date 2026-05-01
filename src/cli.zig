@@ -91,6 +91,9 @@ const help_text =
     \\    llmctl config unset <key>      Remove a default
     \\    llmctl config path             Print the defaults file path
     \\
+    \\RENDER:
+    \\    llmctl render [--no-color]     Read markdown from stdin, write rendered output
+    \\
     \\EXAMPLES:
     \\    llmctl "explain recursion"
     \\    echo "summarize" | llmctl < article.txt

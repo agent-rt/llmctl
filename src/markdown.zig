@@ -91,17 +91,24 @@ pub fn render(arena: std.mem.Allocator, input: []const u8, opts: Options) ![]u8 
     var out: std.ArrayList(u8) = .empty;
     try out.ensureTotalCapacity(arena, input.len + 64);
 
+    // Collect lines into an array so we can peek ahead (table block detection).
+    var lines: std.ArrayList([]const u8) = .empty;
+    {
+        var iter = std.mem.splitScalar(u8, input, '\n');
+        while (iter.next()) |line| try lines.append(arena, line);
+    }
+
     var in_code_block = false;
-    var iter = std.mem.splitScalar(u8, input, '\n');
-    var first = true;
     var prev_line: []const u8 = "";
 
-    while (iter.next()) |line| {
-        if (!first) try out.append(arena, '\n');
-        first = false;
+    var idx: usize = 0;
+    while (idx < lines.items.len) : (idx += 1) {
+        const line = lines.items[idx];
+        if (idx > 0) try out.append(arena, '\n');
+        const next_line: []const u8 = if (idx + 1 < lines.items.len) lines.items[idx + 1] else "";
+        const ltrim = std.mem.trimStart(u8, line, " \t");
 
         // Fence open/close detection — uses the leading-trimmed view.
-        const ltrim = std.mem.trimStart(u8, line, " \t");
         if (std.mem.startsWith(u8, ltrim, "```") or std.mem.startsWith(u8, ltrim, "~~~")) {
             in_code_block = !in_code_block;
             try out.appendSlice(arena, c.dim_on);
@@ -118,7 +125,16 @@ pub fn render(arena: std.mem.Allocator, input: []const u8, opts: Options) ![]u8 
             continue;
         }
 
-        // Indented code block: 4+ leading spaces (only if previous line was blank or code).
+        // ── Table block ── header line + separator next.
+        if (isTableRowLine(line) and isTableSeparator(next_line)) {
+            const consumed = try renderTableBlock(arena, &out, lines.items[idx..], c);
+            // Skip past consumed lines (the loop's idx+=1 will advance one more).
+            idx += consumed - 1;
+            prev_line = line;
+            continue;
+        }
+
+        // Indented code block: 4+ leading spaces.
         if (line.len >= 4 and std.mem.eql(u8, line[0..4], "    ")) {
             try out.appendSlice(arena, c.dim_on);
             try out.appendSlice(arena, line);
@@ -138,10 +154,6 @@ pub fn render(arena: std.mem.Allocator, input: []const u8, opts: Options) ![]u8 
 
         // Setext heading underline (=== or ---) for the previous line.
         if (prev_line.len > 0 and isSetextUnderline(ltrim)) {
-            // Replace the prior render of prev_line with a bold/cyan version.
-            // Simpler: emit the underline dimmed; the heading line was emitted as-is
-            // (we don't lookahead). Acceptable degradation — in practice ATX headings
-            // dominate; setext is uncommon.
             try out.appendSlice(arena, c.dim_on);
             try out.appendSlice(arena, line);
             try out.appendSlice(arena, c.dim_off);
@@ -151,15 +163,6 @@ pub fn render(arena: std.mem.Allocator, input: []const u8, opts: Options) ![]u8 
 
         // Block quote (possibly nested with multiple '>').
         if (std.mem.startsWith(u8, ltrim, "> ") or std.mem.eql(u8, ltrim, ">") or std.mem.startsWith(u8, ltrim, ">>")) {
-            try out.appendSlice(arena, c.dim_on);
-            try out.appendSlice(arena, line);
-            try out.appendSlice(arena, c.dim_off);
-            prev_line = line;
-            continue;
-        }
-
-        // Table separator row: |---|---| or  --- | ---  with optional alignment colons.
-        if (isTableSeparator(line)) {
             try out.appendSlice(arena, c.dim_on);
             try out.appendSlice(arena, line);
             try out.appendSlice(arena, c.dim_off);
@@ -223,6 +226,205 @@ fn isSetextUnderline(s: []const u8) bool {
     if (ch != '=' and ch != '-') return false;
     for (s) |c| if (c != ch) return false;
     return s.len >= 3;
+}
+
+fn isTableRowLine(line: []const u8) bool {
+    const t = std.mem.trimStart(u8, line, " \t");
+    if (t.len == 0 or t[0] != '|') return false;
+    // Need at least one more '|' to form a cell.
+    return std.mem.indexOfScalarPos(u8, t, 1, '|') != null;
+}
+
+const TableAlign = enum { left, right, center };
+
+/// Render a complete GFM table block: header + separator + body rows.
+/// Computes column widths for visible alignment, parses :--- / ---: / :---:
+/// alignment markers, and emits cells with bold header / dim pipes / inline body.
+/// Returns the number of lines consumed.
+fn renderTableBlock(arena: std.mem.Allocator, out: *std.ArrayList(u8), lines: []const []const u8, c: Codes) !usize {
+    if (lines.len < 2) return 0;
+
+    // Collect contiguous table rows: header, separator, then body rows.
+    var rows: std.ArrayList([][]const u8) = .empty;
+    const header_cells = try splitRow(arena, lines[0]);
+    try rows.append(arena, header_cells);
+
+    var aligns: std.ArrayList(TableAlign) = .empty;
+    {
+        const sep_cells = try splitRow(arena, lines[1]);
+        for (sep_cells) |cell| {
+            const t = std.mem.trim(u8, cell, " \t");
+            const left = t.len > 0 and t[0] == ':';
+            const right = t.len > 0 and t[t.len - 1] == ':';
+            const a: TableAlign = if (left and right) .center else if (right) .right else .left;
+            try aligns.append(arena, a);
+        }
+        // Pad alignments to header column count if shorter.
+        while (aligns.items.len < header_cells.len) try aligns.append(arena, .left);
+    }
+
+    var consumed: usize = 2; // header + separator
+    while (consumed < lines.len) : (consumed += 1) {
+        const ln = lines[consumed];
+        if (!isTableRowLine(ln) or isTableSeparator(ln)) break;
+        const body_cells = try splitRow(arena, ln);
+        try rows.append(arena, body_cells);
+    }
+
+    // Compute max visible width per column (across header + body, excluding separator).
+    const ncols = header_cells.len;
+    var widths: std.ArrayList(usize) = .empty;
+    for (0..ncols) |_| try widths.append(arena, 0);
+    for (rows.items) |r| {
+        for (r, 0..) |cell, ci| {
+            if (ci >= ncols) break;
+            const t = std.mem.trim(u8, cell, " \t");
+            const w = visibleWidth(t);
+            if (w > widths.items[ci]) widths.items[ci] = w;
+        }
+    }
+
+    // Emit header row.
+    try emitTableRow(arena, out, header_cells, widths.items, aligns.items, c, true);
+    try out.append(arena, '\n');
+    // Emit separator: dim, with same column widths so it visually matches.
+    try emitSeparator(arena, out, widths.items, aligns.items, c);
+
+    // Emit body rows.
+    for (rows.items[1..]) |body| {
+        try out.append(arena, '\n');
+        try emitTableRow(arena, out, body, widths.items, aligns.items, c, false);
+    }
+
+    return consumed;
+}
+
+/// Split a `| a | b |` row into trimmed cell strings. Leading/trailing empty
+/// cells from outer pipes are dropped.
+fn splitRow(arena: std.mem.Allocator, line: []const u8) ![][]const u8 {
+    var cells: std.ArrayList([]const u8) = .empty;
+    const t = std.mem.trim(u8, line, " \t");
+    var rest = t;
+    if (rest.len > 0 and rest[0] == '|') rest = rest[1..];
+    if (rest.len > 0 and rest[rest.len - 1] == '|') rest = rest[0 .. rest.len - 1];
+    var iter = std.mem.splitScalar(u8, rest, '|');
+    while (iter.next()) |cell| {
+        try cells.append(arena, std.mem.trim(u8, cell, " \t"));
+    }
+    return cells.toOwnedSlice(arena);
+}
+
+fn emitTableRow(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    cells: []const []const u8,
+    widths: []const usize,
+    aligns: []const TableAlign,
+    c: Codes,
+    header: bool,
+) !void {
+    try out.appendSlice(arena, c.dim_on);
+    try out.append(arena, '|');
+    try out.appendSlice(arena, c.dim_off);
+    for (widths, 0..) |w, ci| {
+        const cell = if (ci < cells.len) cells[ci] else "";
+        const cw = visibleWidth(cell);
+        const pad = if (w > cw) w - cw else 0;
+        const al = if (ci < aligns.len) aligns[ci] else .left;
+        var lpad: usize = 0;
+        var rpad: usize = 0;
+        switch (al) {
+            .left => rpad = pad,
+            .right => lpad = pad,
+            .center => {
+                lpad = pad / 2;
+                rpad = pad - lpad;
+            },
+        }
+        try out.append(arena, ' ');
+        try appendSpaces(arena, out, lpad);
+        if (header) try out.appendSlice(arena, c.bold_on);
+        try renderInline(arena, out, cell, c);
+        if (header) try out.appendSlice(arena, c.bold_off);
+        try appendSpaces(arena, out, rpad);
+        try out.append(arena, ' ');
+        try out.appendSlice(arena, c.dim_on);
+        try out.append(arena, '|');
+        try out.appendSlice(arena, c.dim_off);
+    }
+}
+
+fn emitSeparator(
+    arena: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    widths: []const usize,
+    aligns: []const TableAlign,
+    c: Codes,
+) !void {
+    try out.appendSlice(arena, c.dim_on);
+    try out.append(arena, '|');
+    for (widths, 0..) |w, ci| {
+        const al = if (ci < aligns.len) aligns[ci] else .left;
+        try out.append(arena, ' ');
+        const left_marker: u8 = if (al == .center or al == .left) ':' else '-';
+        const right_marker: u8 = if (al == .center or al == .right) ':' else '-';
+        try out.append(arena, left_marker);
+        // dashes for the visible width minus the two markers (min 1 dash)
+        var dash_count: usize = if (w >= 2) w - 2 else 1;
+        if (dash_count < 1) dash_count = 1;
+        for (0..dash_count) |_| try out.append(arena, '-');
+        try out.append(arena, right_marker);
+        try out.append(arena, ' ');
+        try out.append(arena, '|');
+    }
+    try out.appendSlice(arena, c.dim_off);
+}
+
+fn appendSpaces(arena: std.mem.Allocator, out: *std.ArrayList(u8), n: usize) !void {
+    var i: usize = 0;
+    while (i < n) : (i += 1) try out.append(arena, ' ');
+}
+
+/// Approximate terminal cell width of a UTF-8 string. ANSI escape codes
+/// inside `s` are stripped from the count. Inline markdown (e.g. `**x**`)
+/// is also discounted to its visible portion.
+fn visibleWidth(s: []const u8) usize {
+    var w: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        // Skip CSI escape sequences (shouldn't appear in raw markdown but
+        // be defensive).
+        if (s[i] == 0x1b and i + 1 < s.len and s[i + 1] == '[') {
+            i += 2;
+            while (i < s.len and !std.ascii.isAlphabetic(s[i])) i += 1;
+            if (i < s.len) i += 1;
+            continue;
+        }
+        // Skip inline markdown markers when counting visible width.
+        if (s[i] == '*' or s[i] == '_' or s[i] == '`' or s[i] == '~') {
+            // Treat any run of these as zero-width markers.
+            const ch = s[i];
+            while (i < s.len and s[i] == ch) i += 1;
+            continue;
+        }
+        const cw = utf8Width(s[i..]);
+        w += cw.width;
+        i += cw.bytes;
+    }
+    return w;
+}
+
+fn utf8Width(s: []const u8) struct { width: usize, bytes: usize } {
+    if (s.len == 0) return .{ .width = 0, .bytes = 0 };
+    const b = s[0];
+    if (b < 0x80) return .{ .width = 1, .bytes = 1 };
+    if (b < 0xC0) return .{ .width = 1, .bytes = 1 };
+    if (b < 0xE0) return .{ .width = 1, .bytes = 2 };
+    if (b < 0xF0) {
+        const w: usize = if (b >= 0xE3) 2 else 1;
+        return .{ .width = w, .bytes = 3 };
+    }
+    return .{ .width = 2, .bytes = 4 };
 }
 
 fn isTableSeparator(line: []const u8) bool {
@@ -564,7 +766,54 @@ test "render: table separator dimmed" {
     ;
     const out = try render(arena.allocator(), input, .{ .color = true });
     try testing.expect(std.mem.indexOf(u8, out, "\x1b[2m") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "| 1 | 2 |") != null);
+}
+
+test "render: table header bold, pipes dim, body inline" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const input =
+        \\| name | role |
+        \\| :--- | :--- |
+        \\| Alice | dev |
+    ;
+    const out = try render(arena.allocator(), input, .{ .color = true });
+    // Header cell rendered bold.
+    try testing.expect(std.mem.indexOf(u8, out, "\x1b[1m") != null);
+    // Pipes dimmed.
+    try testing.expect(std.mem.indexOf(u8, out, "\x1b[2m|") != null);
+    // Cells preserved in output (with ANSI noise around them).
+    try testing.expect(std.mem.indexOf(u8, out, "name") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Alice") != null);
+}
+
+test "render: table with CJK content" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const input =
+        \\| 场景 | 表达 |
+        \\| :--- | :--- |
+        \\| 礼貌 | さん |
+    ;
+    const out = try render(arena.allocator(), input, .{ .color = true });
+    try testing.expect(std.mem.indexOf(u8, out, "场景") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "さん") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\x1b[1m") != null);
+}
+
+test "render: table ends on blank line, normal text after" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const input =
+        \\| a | b |
+        \\|---|---|
+        \\| 1 | 2 |
+        \\
+        \\after **bold**
+    ;
+    const out = try render(arena.allocator(), input, .{ .color = true });
+    // Bold applied after table closes.
+    try testing.expect(std.mem.indexOf(u8, out, "after ") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\x1b[1m") != null);
 }
 
 test "render: autolink underlined" {

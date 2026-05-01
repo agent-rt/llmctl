@@ -18,7 +18,7 @@ const markdown = llmctl.markdown;
 
 const Compat = enum { openai, anthropic };
 
-const version = "0.3.1";
+const version = "0.3.2";
 
 const ProviderConfig = struct {
     name: []const u8,
@@ -858,6 +858,21 @@ pub fn main(init: std.process.Init) !void {
         try stdout_w.flush();
         try stderr_w.flush();
         if (r.exit_code != 0) std.process.exit(r.exit_code);
+        return;
+    }
+
+    // Early dispatch: `llmctl render` reads markdown from stdin and prints
+    // ANSI-rendered output. Honors --no-color.
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "render")) {
+        var color = true;
+        for (argv[2..]) |a| {
+            if (std.mem.eql(u8, a, "--no-color")) color = false;
+        }
+        const stdin_text = (try readStdin(arena_alloc, io)) orelse "";
+        const out = try markdown.render(arena_alloc, stdin_text, .{ .color = color });
+        try stdout_w.writeAll(out);
+        if (out.len == 0 or out[out.len - 1] != '\n') try stdout_w.writeAll("\n");
+        try stdout_w.flush();
         return;
     }
 
