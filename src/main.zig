@@ -14,6 +14,7 @@ const redact = llmctl.redact;
 const defaults_mod = llmctl.defaults;
 const config_cmd = llmctl.config_cmd;
 const error_body = llmctl.error_body;
+const markdown = llmctl.markdown;
 
 const Compat = enum { openai, anthropic };
 
@@ -793,6 +794,10 @@ pub fn main(init: std.process.Init) !void {
     if (args.temperature == null) args.temperature = defaults_loaded.temperature;
     if (args.top_p == null) args.top_p = defaults_loaded.top_p;
 
+    // --render markdown needs buffered text — streaming would emit partial
+    // markup, so we force buffering as a documented side-effect.
+    if (args.render == .markdown) args.buffer = true;
+
     // ── Resolve provider ──
     const provider_name = args.provider orelse "local";
     var prov = builtinProvider(provider_name) orelse {
@@ -1038,7 +1043,11 @@ pub fn main(init: std.process.Init) !void {
                 if (r.err) |e| {
                     try stdout_w.print("(error: {s})\n", .{e.message});
                 } else {
-                    try stdout_w.writeAll(r_owned.content);
+                    const text = if (args.render == .markdown)
+                        try markdown.render(arena_alloc, r_owned.content, .{ .color = !args.no_color })
+                    else
+                        r_owned.content;
+                    try stdout_w.writeAll(text);
                     if (r_owned.content.len == 0 or r_owned.content[r_owned.content.len - 1] != '\n') {
                         try stdout_w.writeAll("\n");
                     }
@@ -1090,7 +1099,11 @@ pub fn main(init: std.process.Init) !void {
                     try stderr_w.flush();
                 } else {
                     if (args.buffer) {
-                        try stdout_w.writeAll(r.content);
+                        const text = if (args.render == .markdown)
+                            try markdown.render(arena_alloc, r.content, .{ .color = !args.no_color })
+                        else
+                            r.content;
+                        try stdout_w.writeAll(text);
                     }
                     try stdout_w.writeAll("\n");
                     try stdout_w.flush();

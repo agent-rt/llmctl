@@ -12,6 +12,7 @@ pub const session = @import("session.zig");
 pub const repl = @import("repl.zig");
 pub const config_cmd = @import("config_cmd.zig");
 pub const error_body = @import("error_body.zig");
+pub const markdown = @import("markdown.zig");
 
 test {
     _ = sse;
@@ -25,4 +26,5 @@ test {
     _ = session;
     _ = config_cmd;
     _ = error_body;
+    _ = markdown;
 }

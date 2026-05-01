@@ -5,6 +5,7 @@ const types = @import("types.zig");
 const extra_mod = @import("extra.zig");
 
 pub const OutputFormat = enum { text, json, ndjson };
+pub const RenderMode = enum { none, markdown };
 
 pub const Args = struct {
     provider: ?[]const u8 = null,
@@ -20,6 +21,7 @@ pub const Args = struct {
     session: ?[]const u8 = null,
     save_session: ?[]const u8 = null,
     output: OutputFormat = .text,
+    render: RenderMode = .none,
     buffer: bool = false,
     no_color: bool = false,
     dry_run: bool = false,
@@ -56,6 +58,7 @@ const help_text =
     \\
     \\OUTPUT:
     \\    --output text|json|ndjson   (default: text)
+    \\    --render none|markdown      Post-render text output (default: none; implies --buffer)
     \\    --buffer              Buffer text output until completion (alias --no-stream)
     \\    --no-color            Disable ANSI colors
     \\    --json                Alias for --output json
@@ -164,6 +167,11 @@ pub fn parse(arena: std.mem.Allocator, argv: []const [:0]const u8) ParseError!Ar
             a.session = try takeValue(argv, &i, inline_val);
         } else if (std.mem.eql(u8, key, "--save-session")) {
             a.save_session = try takeValue(argv, &i, inline_val);
+        } else if (std.mem.eql(u8, key, "--render")) {
+            const v = try takeValue(argv, &i, inline_val);
+            if (std.mem.eql(u8, v, "none")) a.render = .none
+            else if (std.mem.eql(u8, v, "markdown") or std.mem.eql(u8, v, "md")) a.render = .markdown
+            else return error.InvalidValue;
         } else if (std.mem.eql(u8, key, "--buffer") or std.mem.eql(u8, key, "--no-stream")) {
             a.buffer = true;
         } else if (std.mem.eql(u8, key, "--no-color")) {
