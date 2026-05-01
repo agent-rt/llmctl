@@ -18,7 +18,7 @@ const markdown = llmctl.markdown;
 
 const Compat = enum { openai, anthropic };
 
-const version = "0.3.0";
+const version = "0.3.1";
 
 const ProviderConfig = struct {
     name: []const u8,
@@ -669,14 +669,19 @@ fn replRunTurn(
         .stdout_mu = null,
     });
 
-    // When buffered (forced by render=markdown, or user-set --buffer), runOne
-    // collects content silently — write+render it now.
-    if (ctx.args.buffer and r.err == null) {
-        const text = if (ctx.args.render.? == .markdown)
-            try markdown.render(worker_arena.allocator(), r.content, .{ .color = !ctx.args.no_color })
-        else
-            r.content;
+    // Markdown REPL: streamed live to stdout. Now move cursor up over the
+    // streamed text, clear, and repaint with ANSI-rendered version.
+    if (ctx.args.render.? == .markdown and r.err == null and r.content.len > 0) {
+        const cols = termCols();
+        const rows = streamedRows(r.content, cols);
+        if (rows > 0) try ctx.stdout.print("\x1b[{d}A", .{rows});
+        try ctx.stdout.writeAll("\r\x1b[J");
+        const text = try markdown.render(worker_arena.allocator(), r.content, .{ .color = !ctx.args.no_color });
         try ctx.stdout.writeAll(text);
+        try ctx.stdout.flush();
+    } else if (ctx.args.buffer and r.err == null) {
+        // User-set --buffer without markdown: write the silently-collected content.
+        try ctx.stdout.writeAll(r.content);
         try ctx.stdout.flush();
     }
 
@@ -710,6 +715,101 @@ fn dupeWorkerResult(out_arena: std.mem.Allocator, r: WorkerResult) !WorkerResult
         .bytes_in = r.bytes_in,
         .err = err_owned,
     };
+}
+
+/// Query the controlling terminal's column count via TIOCGWINSZ.
+/// Falls back to $COLUMNS env or 80 if unavailable.
+fn termCols() usize {
+    var ws: std.posix.winsize = undefined;
+    const r = std.c.ioctl(std.c.STDOUT_FILENO, std.c.T.IOCGWINSZ, @intFromPtr(&ws));
+    if (r == 0 and ws.col > 0) return @as(usize, ws.col);
+    return 80;
+}
+
+/// Count the number of terminal rows the cursor descended through while
+/// streaming `content` (i.e. how far up to go to reach the first row of output).
+/// Accounts for line wrapping at `cols` and CJK double-width characters.
+fn streamedRows(content: []const u8, cols: usize) usize {
+    if (content.len == 0 or cols == 0) return 0;
+    var rows: usize = 0;
+    var line_width: usize = 0;
+    var has_partial = false;
+    var i: usize = 0;
+    while (i < content.len) {
+        const b = content[i];
+        if (b == '\n') {
+            rows += 1 + extraWrapRows(line_width, cols);
+            line_width = 0;
+            has_partial = false;
+            i += 1;
+            continue;
+        }
+        const cw = utf8CellWidth(content[i..]);
+        line_width += cw.width;
+        i += cw.bytes;
+        has_partial = true;
+    }
+    if (has_partial) rows += extraWrapRows(line_width, cols);
+    return rows;
+}
+
+fn extraWrapRows(width: usize, cols: usize) usize {
+    if (width == 0 or cols == 0) return 0;
+    return (width - 1) / cols;
+}
+
+/// Approximate visible-cell width of the codepoint starting at `s[0]`. Returns
+/// `{ .width, .bytes }`. Heuristic — handles ASCII, common 2/3/4-byte ranges,
+/// and treats most 3-byte sequences ≥ U+3000 (CJK, fullwidth) and all 4-byte
+/// sequences (emoji, CJK Ext) as width 2.
+fn utf8CellWidth(s: []const u8) struct { width: usize, bytes: usize } {
+    if (s.len == 0) return .{ .width = 0, .bytes = 0 };
+    const b = s[0];
+    if (b < 0x80) return .{ .width = 1, .bytes = 1 };
+    if (b < 0xC0) return .{ .width = 1, .bytes = 1 }; // stray continuation
+    if (b < 0xE0) return .{ .width = 1, .bytes = 2 }; // U+0080..U+07FF
+    if (b < 0xF0) {
+        // U+0800..U+FFFF. Crude split at 0xE3 → ~U+3000 (CJK & fullwidth start).
+        const w: usize = if (b >= 0xE3) 2 else 1;
+        return .{ .width = w, .bytes = 3 };
+    }
+    return .{ .width = 2, .bytes = 4 }; // U+10000+ (emoji, CJK Ext B+)
+}
+
+test "streamedRows: empty" {
+    try std.testing.expectEqual(@as(usize, 0), streamedRows("", 80));
+}
+
+test "streamedRows: single line, no wrap" {
+    try std.testing.expectEqual(@as(usize, 0), streamedRows("hello", 80));
+}
+
+test "streamedRows: trailing newline" {
+    // "hello\n" → cursor moved down 1 row.
+    try std.testing.expectEqual(@as(usize, 1), streamedRows("hello\n", 80));
+}
+
+test "streamedRows: two lines no trailing newline" {
+    // "hello\nworld" → cursor descended 1 row.
+    try std.testing.expectEqual(@as(usize, 1), streamedRows("hello\nworld", 80));
+}
+
+test "streamedRows: two lines trailing newline" {
+    try std.testing.expectEqual(@as(usize, 2), streamedRows("hello\nworld\n", 80));
+}
+
+test "streamedRows: long line wraps" {
+    // 200 ASCII chars at cols=80 → ceil(200/80)=3 rows total, cursor descended 2.
+    const line = "a" ** 200;
+    try std.testing.expectEqual(@as(usize, 2), streamedRows(line, 80));
+}
+
+test "streamedRows: CJK width-2" {
+    // "你好" = 2 codepoints × 2 cells = 4 cells. At cols=80, single row, no descent.
+    try std.testing.expectEqual(@as(usize, 0), streamedRows("你好", 80));
+    // 50 CJK chars = 100 cells. cols=80 → wraps once. cursor descended 1.
+    const cjk = "中" ** 50;
+    try std.testing.expectEqual(@as(usize, 1), streamedRows(cjk, 80));
 }
 
 /// Print a dry-run dump of a built request (POST + headers + body, auth redacted).
@@ -810,7 +910,9 @@ pub fn main(init: std.process.Init) !void {
     // emit partial markup mid-token).
     const render_mode: cli.RenderMode = args.render orelse if (args.interactive) .markdown else .none;
     args.render = render_mode;
-    if (render_mode == .markdown) args.buffer = true;
+    // In one-shot mode, force buffer for markdown (no place to redraw). In REPL,
+    // we stream live and redraw with ANSI cursor moves after each turn.
+    if (render_mode == .markdown and !args.interactive) args.buffer = true;
 
     // ── Resolve provider ──
     const provider_name = args.provider orelse "local";
