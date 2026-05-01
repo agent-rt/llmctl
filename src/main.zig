@@ -669,6 +669,17 @@ fn replRunTurn(
         .stdout_mu = null,
     });
 
+    // When buffered (forced by render=markdown, or user-set --buffer), runOne
+    // collects content silently — write+render it now.
+    if (ctx.args.buffer and r.err == null) {
+        const text = if (ctx.args.render.? == .markdown)
+            try markdown.render(worker_arena.allocator(), r.content, .{ .color = !ctx.args.no_color })
+        else
+            r.content;
+        try ctx.stdout.writeAll(text);
+        try ctx.stdout.flush();
+    }
+
     return .{
         .content = try ctx.arena_alloc.dupe(u8, r.content),
         .usage = r.usage,
@@ -794,9 +805,12 @@ pub fn main(init: std.process.Init) !void {
     if (args.temperature == null) args.temperature = defaults_loaded.temperature;
     if (args.top_p == null) args.top_p = defaults_loaded.top_p;
 
-    // --render markdown needs buffered text — streaming would emit partial
-    // markup, so we force buffering as a documented side-effect.
-    if (args.render == .markdown) args.buffer = true;
+    // Resolve render mode: explicit flag wins; in -i default to markdown,
+    // elsewhere none. --render markdown forces buffering (streaming would
+    // emit partial markup mid-token).
+    const render_mode: cli.RenderMode = args.render orelse if (args.interactive) .markdown else .none;
+    args.render = render_mode;
+    if (render_mode == .markdown) args.buffer = true;
 
     // ── Resolve provider ──
     const provider_name = args.provider orelse "local";
@@ -1043,7 +1057,7 @@ pub fn main(init: std.process.Init) !void {
                 if (r.err) |e| {
                     try stdout_w.print("(error: {s})\n", .{e.message});
                 } else {
-                    const text = if (args.render == .markdown)
+                    const text = if (args.render.? == .markdown)
                         try markdown.render(arena_alloc, r_owned.content, .{ .color = !args.no_color })
                     else
                         r_owned.content;
@@ -1099,7 +1113,7 @@ pub fn main(init: std.process.Init) !void {
                     try stderr_w.flush();
                 } else {
                     if (args.buffer) {
-                        const text = if (args.render == .markdown)
+                        const text = if (args.render.? == .markdown)
                             try markdown.render(arena_alloc, r.content, .{ .color = !args.no_color })
                         else
                             r.content;
