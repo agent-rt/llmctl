@@ -12,6 +12,7 @@ const anthropic = llmctl.anthropic;
 const http = llmctl.http;
 const redact = llmctl.redact;
 const defaults_mod = llmctl.defaults;
+const config_cmd = llmctl.config_cmd;
 
 const Compat = enum { openai, anthropic };
 
@@ -700,6 +701,16 @@ pub fn main(init: std.process.Init) !void {
     const stderr_w = &stderr_fw.interface;
 
     const argv = try init.minimal.args.toSlice(arena_alloc);
+
+    // Early dispatch: `llmctl config <sub> [args...]` is a non-LLM subcommand.
+    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "config")) {
+        const sub_args = argv[2..];
+        const r = try config_cmd.run(arena_alloc, io, env, sub_args, stdout_w, stderr_w);
+        try stdout_w.flush();
+        try stderr_w.flush();
+        if (r.exit_code != 0) std.process.exit(r.exit_code);
+        return;
+    }
 
     const args_parsed = cli.parse(arena_alloc, argv) catch |e| {
         try stderr_w.print("error: {s}\n", .{@errorName(e)});

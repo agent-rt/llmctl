@@ -40,7 +40,7 @@ const help_text =
     \\    echo "..." | llmctl [OPTIONS]
     \\
     \\PROVIDER:
-    \\    --provider <name>     Provider name (default: local; built-ins: local, openai, openai-compat)
+    \\    --provider <name>     Provider name (default: local; built-ins: local, openai, openai-compat, anthropic)
     \\    --base-url <url>      Override provider base URL
     \\    --model, -m <name>    Model name (repeat for multi-model)
     \\
@@ -78,6 +78,14 @@ const help_text =
     \\    local           http://localhost:8080  (auth: none)  ← llama-server default
     \\    openai          https://api.openai.com (auth: bearer ${OPENAI_API_KEY})
     \\    openai-compat   user-supplied via --base-url
+    \\    anthropic       https://api.anthropic.com (auth: bearer ${ANTHROPIC_API_KEY})
+    \\
+    \\CONFIG:
+    \\    llmctl config list             Print all defaults from ~/.config/llmctl/defaults
+    \\    llmctl config get <key>        Print one default
+    \\    llmctl config set <key> <val>  Write/update a default
+    \\    llmctl config unset <key>      Remove a default
+    \\    llmctl config path             Print the defaults file path
     \\
     \\EXAMPLES:
     \\    llmctl "explain recursion"

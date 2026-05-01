@@ -83,15 +83,30 @@ DEBUG:
 
 ## Defaults
 
-`~/.config/llmctl/defaults` — one `key=value` per line — sets fallback
-values for any flag:
+`~/.config/llmctl/defaults` — one `key = value` per line — sets fallback
+values applied before CLI parsing (any flag overrides). Recognized keys:
+`provider`, `model`, `base_url`, `system`, `max_tokens`, `temperature`,
+`top_p`.
 
 ```
-provider=local
-base-url=http://10.0.0.64:8800
-model=unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-Q4_K_M
-max-tokens=4096
+provider = local
+base_url = http://10.0.0.64:8800
+model = unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-Q4_K_M
+max_tokens = 4096
 ```
+
+Manage the file from the CLI:
+
+```bash
+llmctl config list                       # print all currently-set keys
+llmctl config get model                  # print one value
+llmctl config set provider openai        # write/update (preserves comments)
+llmctl config set base_url http://10.0.0.64:8800
+llmctl config unset model
+llmctl config path                       # print resolved file path
+```
+
+Search order for the file: `$LLMCTL_DEFAULTS`, `$XDG_CONFIG_HOME/llmctl/defaults`, `~/.config/llmctl/defaults`.
 
 ## Position in the Agent-RT family
 

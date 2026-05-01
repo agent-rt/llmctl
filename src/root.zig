@@ -10,6 +10,7 @@ pub const cli = @import("cli.zig");
 pub const defaults = @import("defaults.zig");
 pub const session = @import("session.zig");
 pub const repl = @import("repl.zig");
+pub const config_cmd = @import("config_cmd.zig");
 
 test {
     _ = sse;
@@ -21,4 +22,5 @@ test {
     _ = cli;
     _ = defaults;
     _ = session;
+    _ = config_cmd;
 }
