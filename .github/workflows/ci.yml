@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: zig build test
+        run: zig build test --summary all
+      - name: zig build (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
+      - name: smoke
+        run: |
+          ./zig-out/bin/llmctl --version
+          ./zig-out/bin/llmctl --help > /dev/null
+          ./zig-out/bin/llmctl --dry-run --base-url http://localhost:8080 --model x "hi" > /dev/null
