@@ -130,9 +130,12 @@ out of your shell environment.
 
 ## Status
 
-v0.2.0 — provider matrix (`local`, `openai`, `openai-compat`,
-`anthropic`), concurrent multi-model, sessions, REPL, `--extra`
-passthrough. 46/46 tests passing. Tested against llama-server.
+v0.3.0 — provider matrix (`local`, `openai`, `openai-compat`,
+`anthropic`), concurrent multi-model, sessions, REPL with
+markdown-rendered turns by default, `llmctl config get/set/...`,
+smart 4xx/5xx error parsing, `--render markdown` (GFM-flavoured),
+`--extra` passthrough. 81/81 tests passing. Tested against
+llama-server.
 
 ## License
 
