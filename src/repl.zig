@@ -50,6 +50,10 @@ pub const ReplOptions = struct {
     /// Callback to update the model selection (e.g. validate against caller's allowed list).
     /// Returns false if model name unknown/invalid.
     set_model_ok: ?*const fn (ctx: *anyopaque, model: []const u8) bool = null,
+
+    /// Optional pointer to the caller's dry-run flag. When non-null, `/dry-run`
+    /// flips it and subsequent turns print the request body instead of sending.
+    dry_run_ptr: ?*bool = null,
 };
 
 pub fn run(opts: ReplOptions) !void {
@@ -107,6 +111,7 @@ pub fn run(opts: ReplOptions) !void {
                 .provider_name = opts.provider_name,
                 .set_model_ok = opts.set_model_ok,
                 .set_model_ctx = opts.run_turn_ctx,
+                .dry_run_ptr = opts.dry_run_ptr,
             });
             if (stop) break;
             continue;
@@ -210,6 +215,7 @@ const CmdCtx = struct {
     provider_name: []const u8,
     set_model_ok: ?*const fn (ctx: *anyopaque, model: []const u8) bool,
     set_model_ctx: *anyopaque,
+    dry_run_ptr: ?*bool,
 };
 
 /// Returns true if the REPL should exit.
@@ -234,6 +240,7 @@ fn handleCommand(input: []const u8, c: CmdCtx) !bool {
             \\  /load <path>             load session, replacing current history
             \\  /history                 list current messages
             \\  /info                    show provider/model/auto-save status
+            \\  /dry-run [on|off]        toggle dry-run (print request, don't send)
             \\
         );
         try c.out.flush();
@@ -317,13 +324,38 @@ fn handleCommand(input: []const u8, c: CmdCtx) !bool {
             try c.out.print("[{d}] {s}: {s}\n", .{ idx, m.role, m.content });
         }
         try c.out.flush();
+    } else if (std.mem.eql(u8, cmd, "/dry-run") or std.mem.eql(u8, cmd, "/dryrun")) {
+        const ptr = c.dry_run_ptr orelse {
+            try c.err.writeAll("dry-run not available in this context\n");
+            try c.err.flush();
+            return false;
+        };
+        if (rest.len == 0) {
+            // toggle
+            ptr.* = !ptr.*;
+        } else if (std.mem.eql(u8, rest, "on") or std.mem.eql(u8, rest, "true") or std.mem.eql(u8, rest, "1")) {
+            ptr.* = true;
+        } else if (std.mem.eql(u8, rest, "off") or std.mem.eql(u8, rest, "false") or std.mem.eql(u8, rest, "0")) {
+            ptr.* = false;
+        } else {
+            try c.err.writeAll("usage: /dry-run [on|off]\n");
+            try c.err.flush();
+            return false;
+        }
+        try c.out.print("dry-run: {s}\n", .{if (ptr.*) "on" else "off"});
+        try c.out.flush();
     } else if (std.mem.eql(u8, cmd, "/info")) {
-        try c.out.print("provider:  {s}\nmodel:     {s}\nsystem:    {s}\nauto-save: {s}\nmessages:  {}\n", .{
+        const dry_state: []const u8 = blk: {
+            if (c.dry_run_ptr) |p| break :blk if (p.*) "on" else "off";
+            break :blk "(unavailable)";
+        };
+        try c.out.print("provider:  {s}\nmodel:     {s}\nsystem:    {s}\nauto-save: {s}\nmessages:  {}\ndry-run:   {s}\n", .{
             c.provider_name,
             c.current_model.*,
             if (c.current_system.*) |s| s else "(none)",
             if (c.auto_save_path) |p| p else "(off)",
             c.session.messages.items.len,
+            dry_state,
         });
         try c.out.flush();
     } else {

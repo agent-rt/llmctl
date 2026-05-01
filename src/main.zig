@@ -639,6 +639,21 @@ fn replRunTurn(
     var worker_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer worker_arena.deinit();
 
+    if (ctx.args.dry_run) {
+        const req_opts = types.RequestOptions{
+            .model = model,
+            .messages = messages,
+            .system = system_prompt,
+            .temperature = ctx.args.temperature,
+            .max_tokens = ctx.args.max_tokens orelse 4096,
+            .top_p = ctx.args.top_p,
+            .stream = true,
+            .extra = ctx.args.extra,
+        };
+        try printDryRunRequest(worker_arena.allocator(), ctx.provider, ctx.auth, req_opts, ctx.stdout);
+        return .{ .content = "", .usage = .{}, .finish_reason = .unknown };
+    }
+
     const r = try runOne(ctx.gpa, ctx.io, &worker_arena, .{
         .worker_id = 0,
         .provider = ctx.provider,
@@ -683,6 +698,26 @@ fn dupeWorkerResult(out_arena: std.mem.Allocator, r: WorkerResult) !WorkerResult
         .bytes_in = r.bytes_in,
         .err = err_owned,
     };
+}
+
+/// Print a dry-run dump of a built request (POST + headers + body, auth redacted).
+fn printDryRunRequest(
+    arena: std.mem.Allocator,
+    prov: ProviderConfig,
+    auth: types.Auth,
+    opts: types.RequestOptions,
+    w: *Io.Writer,
+) !void {
+    const req = try dispatchBuild(arena, prov, auth, opts);
+    try w.print("POST {s}\n", .{req.url});
+    for (req.headers) |h| {
+        const safe = try redact.redact(arena, h.value);
+        try w.print("{s}: {s}\n", .{ h.name, safe });
+    }
+    try w.writeAll("\n");
+    try w.writeAll(req.body);
+    try w.writeAll("\n");
+    try w.flush();
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -839,6 +874,7 @@ pub fn main(init: std.process.Init) !void {
             .provider_name = prov.name,
             .run_turn = replRunTurn,
             .run_turn_ctx = @ptrCast(&turn_ctx),
+            .dry_run_ptr = &turn_ctx.args.dry_run,
         });
         return;
     }
@@ -879,16 +915,7 @@ pub fn main(init: std.process.Init) !void {
             .stream = true,
             .extra = args.extra,
         };
-        const req = try dispatchBuild(arena_alloc, prov, auth, req_opts);
-        try stdout_w.print("POST {s}\n", .{req.url});
-        for (req.headers) |h| {
-            const safe = try redact.redact(arena_alloc, h.value);
-            try stdout_w.print("{s}: {s}\n", .{ h.name, safe });
-        }
-        try stdout_w.writeAll("\n");
-        try stdout_w.writeAll(req.body);
-        try stdout_w.writeAll("\n");
-        try stdout_w.flush();
+        try printDryRunRequest(arena_alloc, prov, auth, req_opts, stdout_w);
         return;
     }
 
